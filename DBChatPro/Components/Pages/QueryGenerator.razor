@@ -1,0 +1,347 @@
+@page "/query-generator"
+@using Azure
+@using Azure.AI.OpenAI
+@using System.Text.Json
+@using System.Text
+@using DBChatPro.Models
+@using Markdig
+@using Microsoft.Extensions.AI
+@inject ISnackbar Snackbar
+@inject IQueryService queryService
+@inject IConnectionService connectionService
+@inject IDatabaseService dataService
+@inject IConfiguration config
+@inject AIService aiService
+@inject IJSRuntime JSRuntime
+
+<PageTitle>Query Generator</PageTitle>
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Fixed="false">
+    <MudGrid Class="my-2">
+        @if (Connections.Count == 0)
+        {
+            <MudItem xs="12">
+                <MudAlert Severity="Severity.Warning" Class="ma-6">
+                    You haven't connected a database yet. Visit the <a href="/connect-db">database connection</a> page to setup a connection.
+                </MudAlert>
+            </MudItem>
+        }
+        else
+        {
+            <MudItem xs="12">
+                <h1>
+                    SQL Query Generator
+                    <div style="float: right">
+                        <MudIconButton OnClick="@(() => ToggleDrawer(Anchor.End))" Icon="@Icons.Material.Filled.Menu" Color="Color.Inherit" Edge="Edge.Start" />
+                    </div>
+                </h1>
+                <MudDivider Class="mb-6"></MudDivider>
+                
+                <MudGrid>
+                    <MudItem xs="8">
+                        <MudGrid>
+                            <MudItem xs="4">
+                                <MudSelect T="string" ValueChanged="LoadDatabase" Value="ActiveConnection.Name"
+                                Label="Select Database">
+                                    @foreach (var db in Connections)
+                                    {
+                                        <MudSelectItem Value="@db.Name" T="string">@db.Name</MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <MudSelect @bind-Value="aiPlatform"
+                                Label="AI Platform"
+                                Placeholder="Select AI Platform">
+                                    @if (!string.IsNullOrEmpty(config.GetValue<string>("AZURE_OPENAI_ENDPOINT")))
+                                    {
+                                        <MudSelectItem Value="@("AzureOpenAI")" T="string">Azure OpenAI</MudSelectItem>
+                                    }
+                                    @if (!string.IsNullOrEmpty(config.GetValue<string>("OPENAI_KEY")))
+                                    {
+                                        <MudSelectItem Value="@("OpenAI")" T="string">OpenAI</MudSelectItem>
+                                    }
+                                    @if (!string.IsNullOrEmpty(config.GetValue<string>("OLLAMA_ENDPOINT")))
+                                    {
+                                        <MudSelectItem Value="@("Ollama")" T="string">Ollama</MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <MudTextField Label="AI Model" @bind-Value="aiModel" Placeholder="Model or Deployment Name"></MudTextField>
+                            </MudItem>
+                        </MudGrid>
+                        
+                        <EditForm Class="mb-6" Model="FmModel" OnSubmit="() => OnSubmit()">
+                            <div>
+                                <MudTextField @bind-Value="additionalContext" T="string" Label="Additional context (optional)" Variant="Variant.Text" Lines="3" Placeholder="Ex: Always use table aliases, include SQL comments, use only SELECT..." />
+                            </div>
+                            <div>
+                                <MudTextField @bind-Value="FmModel.Prompt" T="string" Label="Your prompt" Variant="Variant.Text" Lines="5" />
+                            </div>
+                            <div>
+                                <MudButton Class="my-6" Variant="Variant.Filled" ButtonType="ButtonType.Submit" Color="Color.Primary">Generate Query</MudButton>
+                            </div>
+                        </EditForm>
+                        
+                        @if (Loading)
+                        {
+                            <MudAlert Severity="Severity.Info" Class="my-6">
+                                @LoadingMessage <MudProgressCircular Color="Color.Primary" Size="Size.Small" Indeterminate="true" />
+                            </MudAlert>
+                        }
+                        
+                        @if (!string.IsNullOrEmpty(Error))
+                        {
+                            <MudAlert Severity="Severity.Error" Class="my-6">
+                                <b>Error:</b> @Error
+                            </MudAlert>
+                        }
+                    </MudItem>
+                    <MudItem xs="4">
+                    </MudItem>
+                </MudGrid>
+                
+                <MudTabs KeepPanelsAlive="true" Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-6">
+                    <MudTabPanel Text="Generated Query">
+                        @if (!string.IsNullOrEmpty(Query))
+                        {
+                            <MudCard Class="my-6">
+                                <MudCardContent>
+                                    <MudText Typo="Typo.h6" Class="mb-4">SQL Query:</MudText>
+                                    <MudTextField @bind-Value="Query" T="string" Variant="Variant.Text" Lines="8" ReadOnly="true" />
+                                    <MudButton @onclick="CopyToClipboard" Class="mt-4" Variant="Variant.Outlined" Color="Color.Primary">
+                                        <MudIcon Icon="@Icons.Material.Filled.ContentCopy" Class="mr-2" />
+                                        Copy Query
+                                    </MudButton>
+                                </MudCardContent>
+                            </MudCard>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Info">
+                                No query generated yet. Type a prompt and click "Generate Query".
+                            </MudAlert>
+                        }
+                    </MudTabPanel>
+                    <MudTabPanel Text="Explanation">
+                        @if (!string.IsNullOrEmpty(Summary))
+                        {
+                            <MudCard Class="my-6">
+                                <MudCardContent>
+                                    <MudText Typo="Typo.h6" Class="mb-4">Query Explanation:</MudText>
+                                    <MudText>@Summary</MudText>
+                                </MudCardContent>
+                            </MudCard>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Info">
+                                No explanation available yet.
+                            </MudAlert>
+                        }
+                    </MudTabPanel>
+                    <MudTabPanel Text="History">
+                        @if (History.Count > 0)
+                        {
+                            <MudList>
+                                @foreach (var item in History)
+                                {
+                                    <MudListItem OnClick="() => LoadQuery(item.Query)" Text="@item.Name" />
+                                }
+                            </MudList>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Info">
+                                No query generation history yet.
+                            </MudAlert>
+                        }
+                    </MudTabPanel>
+                    <MudTabPanel Text="Current Context">
+                        <MudCard Class="my-6">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Class="mb-4">System Context:</MudText>
+                                <MudText Typo="Typo.body2" Class="mb-4">
+                                    <strong>Database:</strong> @ActiveConnection.DatabaseType
+                                </MudText>
+                                @if (!string.IsNullOrEmpty(additionalContext))
+                                {
+                                    <MudText Typo="Typo.body2" Class="mb-4">
+                                        <strong>Additional Context:</strong>
+                                    </MudText>
+                                    <MudTextField @bind-Value="additionalContext" T="string" Variant="Variant.Text" Lines="3" ReadOnly="true" />
+                                }
+                                else
+                                {
+                                    <MudAlert Severity="Severity.Info">
+                                        No additional context defined.
+                                    </MudAlert>
+                                }
+                            </MudCardContent>
+                        </MudCard>
+                    </MudTabPanel>
+                </MudTabs>
+            </MudItem>
+
+            <!-- Drawer lateral -->
+            <MudItem xs="4">
+                <MudDrawer Open="@open" Anchor="Anchor.Right" ClipMode="DrawerClipMode.Always" Elevation="1" Breakpoint="Breakpoint.SmAndUp" Width="30%" Variant="@DrawerVariant.Persistent">
+                    <MudTabs KeepPanelsAlive="true" Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-6">
+                        <MudTabPanel Text="Schema">
+                            <MudText Typo="Typo.h6" Class="mb-4">Database Schema: <b>@ActiveConnection.Name</b></MudText>
+                            <MudTreeView T="string">
+                                @foreach (var table in dbSchema.SchemaStructured)
+                                {
+                                    <MudTreeViewItem Value="@table.TableName">
+                                        @foreach (var col in table.Columns)
+                                        {
+                                            <MudTreeViewItem Value="@col" />
+                                        }
+                                    </MudTreeViewItem>
+                                }
+                            </MudTreeView>
+                        </MudTabPanel>
+                        <MudTabPanel Text="Favorites">
+                            @if (Favorites.Count > 0)
+                            {
+                                <MudText Typo="Typo.h6" Class="mb-4">Your saved queries for <b>@ActiveConnection.Name</b></MudText>
+                                <MudList>
+                                    @foreach (var item in Favorites)
+                                    {
+                                        <MudListItem OnClick="() => LoadQuery(item.Query)" Text="@item.Name" />
+                                    }
+                                </MudList>
+                            }
+                            else
+                            {
+                                <MudAlert Severity="Severity.Info">
+                                    You haven't saved any favorites for <b>@ActiveConnection.Name</b> yet.
+                                </MudAlert>
+                            }
+                        </MudTabPanel>
+                    </MudTabs>
+                </MudDrawer>
+            </MudItem>
+        }
+    </MudGrid>
+</MudContainer>
+
+@code {
+    // Form data
+    public FormModel FmModel { get; set; } = new FormModel();
+    public string aiModel = "";
+    public string aiPlatform = "";
+    public string additionalContext = "";
+
+    // General UI data
+    private bool Loading = false;
+    private string LoadingMessage = String.Empty;
+    public AIConnection ActiveConnection { get; set; } = new();
+    public DatabaseSchema dbSchema = new DatabaseSchema() { SchemaRaw = new List<string>(), SchemaStructured = new List<TableSchema>() };
+
+    // Data lists
+    public List<HistoryItem> History { get; set; } = new();
+    public List<HistoryItem> Favorites { get; set; } = new();
+    public List<AIConnection> Connections { get; set; } = new();
+
+    // Query data
+    private string Summary = String.Empty;
+    private string Query = String.Empty;
+    private string Error = String.Empty;
+
+    // UI Drawer stuff
+    bool open = true;
+    Anchor anchor;
+    void ToggleDrawer(Anchor anchor)
+    {
+        open = !open;
+        this.anchor = anchor;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Connections = await connectionService.GetAIConnections();
+        if (Connections.Count > 0)
+        {
+            ActiveConnection = Connections.FirstOrDefault();
+            dbSchema = await dataService.GenerateSchema(ActiveConnection);
+        }
+        else
+        {
+            ActiveConnection = new AIConnection();
+        }
+        History = await queryService.GetQueries(ActiveConnection.Name, QueryType.History);
+        Favorites = await queryService.GetQueries(ActiveConnection.Name, QueryType.Favorite);
+    }
+
+    public async Task LoadDatabase(string databaseName)
+    {
+        ActiveConnection = (await connectionService.GetAIConnections()).FirstOrDefault(x => x.Name == databaseName);
+        dbSchema = await dataService.GenerateSchema(ActiveConnection);
+        History = await queryService.GetQueries(ActiveConnection.Name, QueryType.History);
+        Favorites = await queryService.GetQueries(ActiveConnection.Name, QueryType.Favorite);
+        ClearUI();
+    }
+
+    private void ClearUI()
+    {
+        Summary = String.Empty;
+        Query = String.Empty;
+        Error = String.Empty;
+        FmModel = new FormModel();
+        additionalContext = String.Empty;
+    }
+
+    public async Task LoadQuery(string query)
+    {
+        FmModel.Prompt = query;
+        await GenerateQuery(query);
+    }
+
+    public async Task OnSubmit()
+    {
+        await GenerateQuery(FmModel.Prompt);
+    }
+
+    public async Task GenerateQuery(string Prompt)
+    {
+        try
+        {
+            Loading = true;
+            LoadingMessage = "Generating query with AI...";
+            
+            var aiResponse = await aiService.GetAISQLQuery(aiModel, aiPlatform, Prompt, dbSchema, ActiveConnection.DatabaseType, additionalContext);
+
+            Query = aiResponse.query;
+            Summary = aiResponse.summary;
+
+            Loading = false;
+            await queryService.SaveQuery(Prompt, ActiveConnection.Name, QueryType.History);
+            History = await queryService.GetQueries(ActiveConnection.Name, QueryType.History);
+            Favorites = await queryService.GetQueries(ActiveConnection.Name, QueryType.Favorite);
+            Error = string.Empty;
+            
+            Snackbar.Add("Query generated successfully!", Severity.Success);
+        }
+        catch (Exception e)
+        {
+            Error = e.Message;
+            Loading = false;
+            LoadingMessage = String.Empty;
+            Snackbar.Add("Error generating query: " + e.Message, Severity.Error);
+        }
+    }
+
+    private async Task CopyToClipboard()
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", Query);
+            Snackbar.Add("Query copied to clipboard!", Severity.Success);
+        }
+        catch
+        {
+            Snackbar.Add("Error copying query", Severity.Error);
+        }
+    }
+} 

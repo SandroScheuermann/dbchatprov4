@@ -16,7 +16,7 @@ namespace DBChatPro.Services
     {
         IChatClient aiClient;
 
-        public async Task<AIQuery> GetAISQLQuery(string aiModel, string aiService, string userPrompt, DatabaseSchema dbSchema, string databaseType)
+        public async Task<AIQuery> GetAISQLQuery(string aiModel, string aiService, string userPrompt, DatabaseSchema dbSchema, string databaseType, string additionalContext = "")
         {
             if (aiClient == null)
             {
@@ -34,15 +34,23 @@ namespace DBChatPro.Services
                 builder.AppendLine(table);
             }
 
-            builder.AppendLine("Include column name headers in the query results.");
+			builder.AppendLine("The database is a FireBird Database, Version 2.5.9");
+			builder.AppendLine("Include column name headers in the query results.");
             builder.AppendLine("Always provide your answer in the JSON format below:");
             builder.AppendLine(@"{ ""summary"": ""your-summary"", ""query"":  ""your-query"" }");
             builder.AppendLine("Output ONLY JSON formatted on a single line. Do not use new line characters.");
             builder.AppendLine(@"In the preceding JSON response, substitute ""your-query"" with the database query used to retrieve the requested data.");
             builder.AppendLine(@"In the preceding JSON response, substitute ""your-summary"" with an explanation of each step you took to create this query in a detailed paragraph.");
             builder.AppendLine($"Only use {databaseType} syntax for database queries.");
-            builder.AppendLine($"Always limit the SQL Query to {maxRows} rows.");
+            builder.AppendLine($"Always select the first {maxRows} rows. Note that Firebird doesn't have LIMIT keyword. It uses FIRST.");
             builder.AppendLine("Always include all of the table columns and details.");
+            
+            // Add additional context if provided
+            if (!string.IsNullOrEmpty(additionalContext))
+            {
+                builder.AppendLine("Additional context and instructions:");
+                builder.AppendLine(additionalContext);
+            }
 
             // Build the AI chat/prompts
             if (string.IsNullOrEmpty(config.GetValue<string>("Ollama_ENDPOINT")))

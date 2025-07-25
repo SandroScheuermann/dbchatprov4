@@ -23,6 +23,7 @@ builder.Services.AddScoped<IDatabaseService, DatabaseManagerService>();
 builder.Services.AddScoped<MySqlDatabaseService>();
 builder.Services.AddScoped<SqlServerDatabaseService>();
 builder.Services.AddScoped<PostgresDatabaseService>();
+builder.Services.AddScoped<FirebirdServerDatabaseService>();
 
 
 // For Azure OpenAI using Entra ID
